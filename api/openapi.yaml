@@ -1,0 +1,430 @@
+openapi: 3.0.3
+info:
+  title: Alfred Travel Assistant API
+  version: 1.0.0
+  description: >-
+    Проектный контракт внутреннего API. Bearer-токен проверяется сервером;
+    все ресурсы требуют членства в поездке. Изменение требует роли организатора
+    и полномочий на затронутое бронирование. Реализация и внешний сервер отсутствуют.
+servers:
+  - url: https://alfred.example/api/v1
+security:
+  - bearerAuth: []
+paths:
+  /trips/{tripId}/plan:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+    get:
+      operationId: getTripPlan
+      summary: Получить актуальный общий план
+      responses:
+        '200':
+          description: Полный снимок с версией для проверки конкурентных изменений
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /trips/{tripId}/alternatives:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+    get:
+      operationId: getAlternatives
+      summary: Получить сохранённые альтернативы затронутому бронированию
+      description: >-
+        Генерация запускается обработчиком изменения рейса. Пустой список при
+        search_status=PENDING означает поиск, COMPLETE — завершённый поиск без
+        результатов, FAILED — ошибку поставщика. Для FAILED доступен retry_after_seconds.
+      parameters:
+        - name: booking_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Статус поиска и варианты, включая требующие визовой проверки
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plan_version, search_status, items]
+                properties:
+                  plan_version:
+                    type: integer
+                    minimum: 1
+                  search_status:
+                    type: string
+                    enum: [PENDING, COMPLETE, FAILED]
+                  retry_after_seconds:
+                    type: integer
+                    minimum: 1
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alternative'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /trips/{tripId}/change-operations:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+    post:
+      operationId: confirmAlternative
+      summary: Подтвердить альтернативу и создать асинхронную операцию
+      description: >-
+        Проверяются принадлежность предложения бронированию и поездке, права,
+        версия, expires_at, визы и полнота цены. Idempotency-Key действует в
+        области пользователя и данного endpoint; одинаковое тело возвращает
+        исходную операцию. Несовпадающее тело с тем же ключом — конфликт.
+        Повтор терминальной операции также возвращает её текущее состояние.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [alternative_id, expected_plan_version]
+              properties:
+                alternative_id:
+                  type: string
+                expected_plan_version:
+                  type: integer
+                  minimum: 1
+            example:
+              alternative_id: alt-demo-001
+              expected_plan_version: 7
+      responses:
+        '202':
+          description: Операция сохранена; это ещё не подтверждение покупки
+          headers:
+            Location:
+              description: Путь для чтения операции
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          description: Невалидный формат запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: PLAN_VERSION_CONFLICT, IDEMPOTENCY_CONFLICT или OPERATION_IN_PROGRESS
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: OFFER_EXPIRED — срок предложения истёк
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: VISA_CHECK_REQUIRED или OFFER_NOT_ELIGIBLE — вариант нельзя подтвердить
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /trips/{tripId}/change-operations/{operationId}:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+      - name: operationId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getChangeOperation
+      summary: Узнать результат подтверждения
+      responses:
+        '200':
+          description: Текущее состояние; RECONCILING означает неизвестный внешний результат
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /me/notifications:
+    get:
+      operationId: getMyNotifications
+      summary: Получить собственные уведомления после восстановления сети
+      parameters:
+        - name: unread_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: cursor
+          in: query
+          description: Непрозрачный курсор пагинации
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Уведомления текущего пользователя; страница не более 100 записей
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  items:
+                    type: array
+                    maxItems: 100
+                    items:
+                      type: object
+                      required: [id, trip_id, message, created_at, read_at]
+                      properties:
+                        id:
+                          type: string
+                        trip_id:
+                          type: string
+                        message:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        read_at:
+                          type: string
+                          format: date-time
+                          nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/notifications/{notificationId}/read:
+    parameters:
+      - name: notificationId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      operationId: markNotificationRead
+      summary: Отметить собственное уведомление прочитанным
+      responses:
+        '204':
+          description: Прочитано; повтор не изменяет первоначальное read_at
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    TripId:
+      name: tripId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Требуется действительная авторизация
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Нет доступа к поездке или полномочий на действие
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Ресурс не найден; чужое уведомление также возвращает 404
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [code, message, correlation_id]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        correlation_id:
+          type: string
+        current_plan_version:
+          type: integer
+          minimum: 1
+    Plan:
+      type: object
+      required: [trip_id, version, updated_at, items]
+      properties:
+        trip_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        updated_at:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, type, starts_at, ends_at, time_zone, freshness]
+            properties:
+              id:
+                type: string
+              type:
+                type: string
+                enum: [FLIGHT, TRANSFER, HOTEL, ACTIVITY]
+              starts_at:
+                type: string
+                format: date-time
+              ends_at:
+                type: string
+                format: date-time
+              time_zone:
+                type: string
+                description: IANA-зона начала события
+              arrival_time_zone:
+                type: string
+                description: Для рейса — IANA-зона аэропорта прибытия
+              freshness:
+                type: string
+                enum: [CURRENT, STALE, UNKNOWN]
+              source_updated_at:
+                type: string
+                format: date-time
+                nullable: true
+              last_checked_at:
+                type: string
+                format: date-time
+                nullable: true
+              conflict_reason:
+                type: string
+                nullable: true
+    Alternative:
+      type: object
+      required: [id, booking_id, base_plan_version, expires_at, arrival_at, price, available_seats, baggage_summary, visa_check, eligible, segments]
+      properties:
+        id:
+          type: string
+        booking_id:
+          type: string
+        base_plan_version:
+          type: integer
+          minimum: 1
+        expires_at:
+          type: string
+          format: date-time
+        arrival_at:
+          type: string
+          format: date-time
+        price:
+          type: object
+          description: Полная цена для состава бронирования с обязательным багажом
+          required: [amount, currency]
+          properties:
+            amount:
+              type: string
+              pattern: '^[0-9]+\.[0-9]{2}$'
+              example: '45000.00'
+            currency:
+              type: string
+              pattern: '^[A-Z]{3}$'
+              example: RUB
+        available_seats:
+          type: integer
+          minimum: 0
+        baggage_summary:
+          type: string
+        visa_check:
+          type: string
+          enum: [PASS, FAIL, UNKNOWN]
+        eligible:
+          type: boolean
+          description: true только при PASS и выполнении всех обязательных проверок
+        restriction_reason:
+          type: string
+          nullable: true
+        segments:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [flight_id, origin, destination, departure_at, arrival_at, origin_time_zone, destination_time_zone]
+            properties:
+              flight_id:
+                type: string
+              origin:
+                type: string
+              destination:
+                type: string
+              departure_at:
+                type: string
+                format: date-time
+              arrival_at:
+                type: string
+                format: date-time
+              origin_time_zone:
+                type: string
+              destination_time_zone:
+                type: string
+    Operation:
+      type: object
+      required: [id, trip_id, alternative_id, status]
+      properties:
+        id:
+          type: string
+        trip_id:
+          type: string
+        alternative_id:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, RECHECKING, BOOKING, SUCCEEDED, FAILED, RECONCILING, RECONFIRMATION_REQUIRED]
+        result_booking_id:
+          type: string
+          nullable: true
+        failure_code:
+          type: string
+          nullable: true
+        reconfirmation_alternative_id:
+          type: string
+          nullable: true
+          description: Новое предложение при изменении условий; требует нового подтверждения
