@@ -1,0 +1,25 @@
+{
+  "event_id": "evt-demo-0001",
+  "event_type": "flight.status.changed",
+  "provider": "demo-provider",
+  "provider_event_id": "source-demo-0012",
+  "source_version": 12,
+  "source_updated_at": "2026-12-10T10:00:00Z",
+  "received_at": "2026-12-10T10:03:00Z",
+  "correlation_id": "corr-demo-0001",
+  "flight": {
+    "id": "flight-demo-001",
+    "carrier": "DEMO",
+    "number": "101",
+    "departure_service_date": "2026-12-10",
+    "origin": "AAA",
+    "destination": "BBB",
+    "status": "DELAYED",
+    "scheduled_departure_at": "2026-12-10T10:00:00Z",
+    "estimated_departure_at": "2026-12-10T11:40:00Z",
+    "scheduled_arrival_at": "2026-12-10T12:00:00Z",
+    "estimated_arrival_at": "2026-12-10T13:40:00Z",
+    "origin_time_zone": "Europe/Moscow",
+    "destination_time_zone": "Europe/Istanbul"
+  }
+}
